@@ -26,6 +26,16 @@ export type ColMapping = {
   colB: string;
 };
 
+export type CompareOptions = {
+  caseInsensitive: boolean;
+  ignoreWhitespace: boolean;
+};
+
+export type NumericDiff = {
+  delta: number;
+  pct: number | null;
+};
+
 export type ComparisonResult = {
   summary: {
     totalA: number;
@@ -43,6 +53,7 @@ export type ComparisonResult = {
   keyMappings: ColMapping[];
   compareMappings: ColMapping[];
   appliedRules: Rule[];
+  options: CompareOptions;
 };
 
 export type DiffRow = {
@@ -50,6 +61,7 @@ export type DiffRow = {
   rowA: any;
   rowB: any;
   changedMappings: ColMapping[];
+  numericDiffs: Record<string, NumericDiff>;
 };
 
 export type MatchedRow = {
@@ -88,9 +100,16 @@ export async function parseExcelFile(file: File): Promise<{ data: any[]; columns
   });
 }
 
-function makeCompositeKey(row: any, mappings: ColMapping[], side: "A" | "B"): string {
+function normalizeVal(raw: any, opts: CompareOptions): string {
+  let s = String(raw ?? "");
+  if (opts.ignoreWhitespace) s = s.trim();
+  if (opts.caseInsensitive) s = s.toLowerCase();
+  return s;
+}
+
+function makeCompositeKey(row: any, mappings: ColMapping[], side: "A" | "B", opts: CompareOptions): string {
   return mappings
-    .map(m => String(row[side === "A" ? m.colA : m.colB] ?? "").trim())
+    .map(m => normalizeVal(row[side === "A" ? m.colA : m.colB], opts))
     .join("|||");
 }
 
@@ -113,36 +132,76 @@ function applyRule(row: any, rule: Rule): boolean {
   }
 }
 
+function computeNumericDiff(valA: string, valB: string): NumericDiff | null {
+  const nA = parseFloat(valA.replace(/,/g, ""));
+  const nB = parseFloat(valB.replace(/,/g, ""));
+  if (isNaN(nA) || isNaN(nB)) return null;
+  const delta = nB - nA;
+  const pct = nA !== 0 ? ((delta / Math.abs(nA)) * 100) : null;
+  return { delta, pct };
+}
+
+/** Suggest column mappings between two column lists based on name similarity */
+export function autoSuggestMappings(colsA: string[], colsB: string[]): ColMapping[] {
+  const suggestions: ColMapping[] = [];
+  const usedB = new Set<string>();
+
+  function similarity(a: string, b: string): number {
+    const na = a.toLowerCase().replace(/[^a-z0-9]/g, "");
+    const nb = b.toLowerCase().replace(/[^a-z0-9]/g, "");
+    if (na === nb) return 1;
+    if (na.includes(nb) || nb.includes(na)) return 0.8;
+    // Count shared words
+    const wordsA = new Set(a.toLowerCase().split(/[\s_\-]+/));
+    const wordsB = b.toLowerCase().split(/[\s_\-]+/);
+    const shared = wordsB.filter(w => wordsA.has(w)).length;
+    const total = Math.max(wordsA.size, wordsB.length);
+    return shared / total;
+  }
+
+  for (const ca of colsA) {
+    let bestScore = 0.3; // minimum threshold
+    let bestB: string | null = null;
+    for (const cb of colsB) {
+      if (usedB.has(cb)) continue;
+      const score = similarity(ca, cb);
+      if (score > bestScore) { bestScore = score; bestB = cb; }
+    }
+    if (bestB) {
+      suggestions.push({ id: Math.random().toString(36).slice(2), colA: ca, colB: bestB });
+      usedB.add(bestB);
+    }
+  }
+  return suggestions;
+}
+
 export function compareSheets(
   dataA: any[],
   dataB: any[],
   keyMappings: ColMapping[],
   compareMappings: ColMapping[],
-  rules: Rule[]
+  rules: Rule[],
+  options: CompareOptions
 ): ComparisonResult {
   const rulesA = rules.filter(r => r.sheet === "A");
   const rulesB = rules.filter(r => r.sheet === "B");
+  let filteredCount = 0;
 
   const mapA = new Map<string, any>();
   const mapB = new Map<string, any>();
-  let filteredCount = 0;
 
   dataA.forEach(row => {
     if (rulesA.every(r => applyRule(row, r))) {
-      const key = makeCompositeKey(row, keyMappings, "A");
+      const key = makeCompositeKey(row, keyMappings, "A", options);
       if (key.replace(/\|{3}/g, "").trim()) mapA.set(key, row);
-    } else {
-      filteredCount++;
-    }
+    } else filteredCount++;
   });
 
   dataB.forEach(row => {
     if (rulesB.every(r => applyRule(row, r))) {
-      const key = makeCompositeKey(row, keyMappings, "B");
+      const key = makeCompositeKey(row, keyMappings, "B", options);
       if (key.replace(/\|{3}/g, "").trim()) mapB.set(key, row);
-    } else {
-      filteredCount++;
-    }
+    } else filteredCount++;
   });
 
   const matched: MatchedRow[] = [];
@@ -156,13 +215,23 @@ export function compareSheets(
       onlyA.push(rowA);
     } else {
       const changedMappings: ColMapping[] = [];
+      const numericDiffs: Record<string, NumericDiff> = {};
+
       for (const m of compareMappings) {
-        const valA = String(rowA[m.colA] ?? "").trim();
-        const valB = String(rowB[m.colB] ?? "").trim();
-        if (valA !== valB) changedMappings.push(m);
+        const valA = normalizeVal(rowA[m.colA], options);
+        const valB = normalizeVal(rowB[m.colB], options);
+        if (valA !== valB) {
+          changedMappings.push(m);
+          const nd = computeNumericDiff(
+            String(rowA[m.colA] ?? ""),
+            String(rowB[m.colB] ?? "")
+          );
+          if (nd) numericDiffs[m.id] = nd;
+        }
       }
+
       if (changedMappings.length > 0) {
-        differences.push({ key, rowA, rowB, changedMappings });
+        differences.push({ key, rowA, rowB, changedMappings, numericDiffs });
       } else {
         matched.push({ key, rowA, rowB });
       }
@@ -190,6 +259,7 @@ export function compareSheets(
     keyMappings,
     compareMappings,
     appliedRules: rules,
+    options,
   };
 }
 
@@ -206,6 +276,10 @@ export function exportResultsToExcel(result: ComparisonResult, nameA: string, na
     ["Only in " + nameB, result.summary.onlyBCount],
     ["Filtered by rules", result.summary.filteredCount],
     [],
+    ["Options"],
+    ["  Case insensitive", result.options.caseInsensitive ? "Yes" : "No"],
+    ["  Ignore whitespace", result.options.ignoreWhitespace ? "Yes" : "No"],
+    [],
     ["Key Mappings"],
     ...result.keyMappings.map(m => [`  ${nameA}: ${m.colA}`, `→ ${nameB}: ${m.colB}`]),
     [],
@@ -220,13 +294,16 @@ export function exportResultsToExcel(result: ComparisonResult, nameA: string, na
   if (result.differences.length > 0) {
     const diffExportData: any[] = result.differences.map(diff => {
       const row: any = {};
-      result.keyMappings.forEach(m => {
-        row[`KEY: ${m.colA} (Online)`] = diff.rowA[m.colA] ?? "";
-      });
+      result.keyMappings.forEach(m => { row[`KEY: ${m.colA}`] = diff.rowA[m.colA] ?? ""; });
       result.compareMappings.forEach(m => {
         const changed = diff.changedMappings.some(c => c.id === m.id);
-        row[`${m.colA} (Online)`] = diff.rowA[m.colA] ?? "";
-        row[`${m.colB} (In-Store)`] = diff.rowB[m.colB] ?? "";
+        row[`${m.colA} (${nameA})`] = diff.rowA[m.colA] ?? "";
+        row[`${m.colB} (${nameB})`] = diff.rowB[m.colB] ?? "";
+        if (changed && diff.numericDiffs[m.id]) {
+          const nd = diff.numericDiffs[m.id];
+          row[`${m.colA} Delta`] = nd.delta.toFixed(2);
+          if (nd.pct !== null) row[`${m.colA} Change %`] = nd.pct.toFixed(1) + "%";
+        }
         row[`Changed?`] = changed ? "YES" : "";
       });
       return row;
@@ -238,7 +315,10 @@ export function exportResultsToExcel(result: ComparisonResult, nameA: string, na
     const matchedData = result.matched.map(m => {
       const row: any = {};
       result.keyMappings.forEach(km => { row[`KEY: ${km.colA}`] = m.rowA[km.colA] ?? ""; });
-      result.compareMappings.forEach(cm => { row[`${cm.colA} (Online)`] = m.rowA[cm.colA] ?? ""; row[`${cm.colB} (In-Store)`] = m.rowB[cm.colB] ?? ""; });
+      result.compareMappings.forEach(cm => {
+        row[`${cm.colA} (${nameA})`] = m.rowA[cm.colA] ?? "";
+        row[`${cm.colB} (${nameB})`] = m.rowB[cm.colB] ?? "";
+      });
       return row;
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(matchedData), "Matched");
