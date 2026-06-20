@@ -2,13 +2,15 @@ import React, { useState, useCallback, useMemo } from "react";
 import {
   UploadCloud, FileSpreadsheet, ArrowRight, Play, RefreshCcw, Download,
   CheckCircle2, AlertTriangle, FileWarning, PlusCircle, MinusCircle,
-  Key, SlidersHorizontal, Trash2, Plus, X, ShoppingCart, Store
+  Key, SlidersHorizontal, Trash2, Plus, X, ShoppingCart, Store, ArrowLeftRight
 } from "lucide-react";
-import { parseExcelFile, compareSheets, exportResultsToExcel, ComparisonResult, Rule, RuleOperator, RuleTarget } from "@/lib/excel-utils";
+import {
+  parseExcelFile, compareSheets, exportResultsToExcel,
+  ComparisonResult, Rule, RuleOperator, RuleSheet, ColMapping
+} from "@/lib/excel-utils";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -28,45 +30,25 @@ const OPERATORS: { value: RuleOperator; label: string; needsValue: boolean }[] =
   { value: "is_not_empty", label: "is not empty", needsValue: false },
 ];
 
-const TARGETS: { value: RuleTarget; label: string }[] = [
-  { value: "both", label: "Both sheets" },
-  { value: "A", label: "Online only" },
-  { value: "B", label: "In-Store only" },
-  { value: "diff_only", label: "Differences only" },
-];
+function makeId() { return Math.random().toString(36).slice(2); }
 
-function makeId() {
-  return Math.random().toString(36).slice(2);
-}
+type FileData = { name: string; data: any[]; columns: string[] };
 
 export default function Home() {
   const { toast } = useToast();
   const [step, setStep] = useState<Step>("upload");
 
-  const [fileA, setFileA] = useState<{ name: string; data: any[]; columns: string[] } | null>(null);
-  const [fileB, setFileB] = useState<{ name: string; data: any[]; columns: string[] } | null>(null);
+  const [fileA, setFileA] = useState<FileData | null>(null);
+  const [fileB, setFileB] = useState<FileData | null>(null);
 
-  const [keyCols, setKeyCols] = useState<Set<string>>(new Set());
-  const [selectedCols, setSelectedCols] = useState<Set<string>>(new Set());
+  // Key mappings: colA (Online) ↔ colB (In-Store)
+  const [keyMappings, setKeyMappings] = useState<ColMapping[]>([]);
+  // Compare mappings: compare colA (Online) vs colB (In-Store)
+  const [compareMappings, setCompareMappings] = useState<ColMapping[]>([]);
+  // Rules
   const [rules, setRules] = useState<Rule[]>([]);
 
   const [results, setResults] = useState<ComparisonResult | null>(null);
-
-  const sharedColumns = useMemo(() => {
-    if (!fileA || !fileB) return [];
-    return fileA.columns.filter(c => fileB.columns.includes(c));
-  }, [fileA, fileB]);
-
-  const allColumns = useMemo(() => {
-    if (!fileA && !fileB) return [];
-    const setA = new Set(fileA?.columns ?? []);
-    const setB = new Set(fileB?.columns ?? []);
-    return Array.from(new Set([...(fileA?.columns ?? []), ...(fileB?.columns ?? [])])).map(c => ({
-      col: c,
-      inA: setA.has(c),
-      inB: setB.has(c),
-    }));
-  }, [fileA, fileB]);
 
   const handleFileUpload = async (file: File, side: "A" | "B") => {
     try {
@@ -85,56 +67,49 @@ export default function Home() {
 
   const proceedToConfig = () => {
     if (!fileA || !fileB) return;
-    if (sharedColumns.length > 0) {
-      setKeyCols(new Set([sharedColumns[0]]));
-      setSelectedCols(new Set(sharedColumns));
-    }
+    // Start with one empty key mapping and one empty compare mapping
+    setKeyMappings([{ id: makeId(), colA: fileA.columns[0] ?? "", colB: fileB.columns[0] ?? "" }]);
+    setCompareMappings([{ id: makeId(), colA: fileA.columns[1] ?? fileA.columns[0] ?? "", colB: fileB.columns[1] ?? fileB.columns[0] ?? "" }]);
     setRules([]);
     setStep("config");
   };
 
-  const toggleKeyCol = (col: string) => {
-    const next = new Set(keyCols);
-    next.has(col) ? next.delete(col) : next.add(col);
-    setKeyCols(next);
+  // Key mapping helpers
+  const addKeyMapping = () => {
+    if (!fileA || !fileB) return;
+    setKeyMappings(p => [...p, { id: makeId(), colA: fileA.columns[0] ?? "", colB: fileB.columns[0] ?? "" }]);
   };
+  const updateKeyMapping = (id: string, patch: Partial<ColMapping>) =>
+    setKeyMappings(p => p.map(m => m.id === id ? { ...m, ...patch } : m));
+  const removeKeyMapping = (id: string) => setKeyMappings(p => p.filter(m => m.id !== id));
 
-  const toggleCompareCols = (col: string) => {
-    const next = new Set(selectedCols);
-    next.has(col) ? next.delete(col) : next.add(col);
-    setSelectedCols(next);
+  // Compare mapping helpers
+  const addCompareMapping = () => {
+    if (!fileA || !fileB) return;
+    setCompareMappings(p => [...p, { id: makeId(), colA: fileA.columns[0] ?? "", colB: fileB.columns[0] ?? "" }]);
   };
+  const updateCompareMapping = (id: string, patch: Partial<ColMapping>) =>
+    setCompareMappings(p => p.map(m => m.id === id ? { ...m, ...patch } : m));
+  const removeCompareMapping = (id: string) => setCompareMappings(p => p.filter(m => m.id !== id));
 
+  // Rule helpers
   const addRule = () => {
-    if (sharedColumns.length === 0) return;
-    setRules(prev => [...prev, {
-      id: makeId(),
-      column: sharedColumns[0],
-      operator: "equals",
-      value: "",
-      target: "both",
-    }]);
+    if (!fileA) return;
+    setRules(p => [...p, { id: makeId(), sheet: "A", column: fileA.columns[0] ?? "", operator: "equals", value: "" }]);
   };
-
-  const updateRule = (id: string, patch: Partial<Rule>) => {
-    setRules(prev => prev.map(r => r.id === id ? { ...r, ...patch } : r));
-  };
-
-  const removeRule = (id: string) => {
-    setRules(prev => prev.filter(r => r.id !== id));
-  };
+  const updateRule = (id: string, patch: Partial<Rule>) => setRules(p => p.map(r => r.id === id ? { ...r, ...patch } : r));
+  const removeRule = (id: string) => setRules(p => p.filter(r => r.id !== id));
 
   const runComparison = () => {
-    if (!fileA || !fileB || keyCols.size === 0) return;
+    if (!fileA || !fileB || keyMappings.length === 0 || compareMappings.length === 0) return;
     setStep("loading");
     setTimeout(() => {
       try {
-        const compareColsArr = Array.from(selectedCols).filter(c => !keyCols.has(c));
         const validRules = rules.filter(r => {
           const op = OPERATORS.find(o => o.value === r.operator);
           return op && (!op.needsValue || r.value.trim() !== "");
         });
-        const res = compareSheets(fileA.data, fileB.data, Array.from(keyCols), compareColsArr, validRules);
+        const res = compareSheets(fileA.data, fileB.data, keyMappings, compareMappings, validRules);
         setResults(res);
         setStep("results");
       } catch {
@@ -146,7 +121,7 @@ export default function Home() {
 
   const reset = () => {
     setFileA(null); setFileB(null);
-    setKeyCols(new Set()); setSelectedCols(new Set());
+    setKeyMappings([]); setCompareMappings([]);
     setRules([]); setResults(null);
     setStep("upload");
   };
@@ -178,7 +153,7 @@ export default function Home() {
 
       <main className="flex-1 p-6 max-w-7xl w-full mx-auto">
 
-        {/* ── UPLOAD STEP ── */}
+        {/* ── UPLOAD ── */}
         {step === "upload" && (
           <div className="animate-in fade-in zoom-in-95 duration-300">
             <div className="mb-8">
@@ -197,8 +172,8 @@ export default function Home() {
           </div>
         )}
 
-        {/* ── CONFIG STEP ── */}
-        {step === "config" && (
+        {/* ── CONFIG ── */}
+        {step === "config" && fileA && fileB && (
           <div className="animate-in fade-in slide-in-from-bottom-4 duration-300">
             <div className="flex items-center gap-4 mb-8">
               <Button variant="ghost" size="icon" onClick={() => setStep("upload")} className="shrink-0 rounded-full h-8 w-8">
@@ -206,93 +181,94 @@ export default function Home() {
               </Button>
               <div>
                 <h2 className="text-3xl font-semibold">Configure Comparison</h2>
-                <p className="text-muted-foreground text-lg">Set match keys, comparison columns, and filter rules.</p>
+                <p className="text-muted-foreground text-lg">Map columns between the two files and set filter rules.</p>
               </div>
+            </div>
+
+            {/* Column header labels */}
+            <div className="grid grid-cols-[1fr_auto_1fr_auto] gap-3 mb-2 px-1 items-center">
+              <div className="flex items-center gap-2">
+                <ShoppingCart className="w-4 h-4 text-blue-400 shrink-0" />
+                <span className="text-xs font-semibold text-blue-400 uppercase tracking-wide truncate">{fileA.name}</span>
+              </div>
+              <div className="w-8" />
+              <div className="flex items-center gap-2">
+                <Store className="w-4 h-4 text-violet-400 shrink-0" />
+                <span className="text-xs font-semibold text-violet-400 uppercase tracking-wide truncate">{fileB.name}</span>
+              </div>
+              <div className="w-8" />
             </div>
 
             {/* Step 1: Match Keys */}
             <Card className="border-border/50 shadow-md mb-6 bg-card/50 backdrop-blur">
               <CardHeader className="pb-3">
-                <div className="flex items-center gap-2">
-                  <Key className="w-5 h-5 text-primary" />
-                  <CardTitle className="text-lg">1. Match Keys</CardTitle>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Key className="w-5 h-5 text-primary" />
+                    <CardTitle className="text-lg">1. Match Keys</CardTitle>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={addKeyMapping} data-testid="button-add-key">
+                    <Plus className="w-4 h-4 mr-1" />Add Key
+                  </Button>
                 </div>
                 <CardDescription>
-                  Select one or more columns that uniquely identify a product across both sheets. Rows are joined by combining all selected keys.
-                  <span className="block mt-1 text-xs text-primary/80">e.g. select "SKU" + "Warehouse" to match on both fields together.</span>
+                  Pick the column in each sheet that identifies the same product. They can have different names — e.g. "Product Code" in Online matches "Item ID" in In-Store.
                 </CardDescription>
               </CardHeader>
               <CardContent>
-                {sharedColumns.length === 0 ? (
-                  <p className="text-sm text-destructive">No shared columns found between the two files.</p>
-                ) : (
-                  <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                    {sharedColumns.map(col => (
-                      <div
-                        key={col}
-                        onClick={() => toggleKeyCol(col)}
-                        className={`flex items-center gap-2 p-3 rounded-md border cursor-pointer transition-colors select-none ${keyCols.has(col) ? "border-primary bg-primary/10 text-primary" : "border-border/50 bg-background hover:border-primary/40"}`}
-                        data-testid={`key-col-${col}`}
-                      >
-                        <Checkbox checked={keyCols.has(col)} onCheckedChange={() => toggleKeyCol(col)} id={`key-${col}`} className="pointer-events-none" />
-                        <label htmlFor={`key-${col}`} className="text-sm font-medium truncate cursor-pointer" title={col}>{col}</label>
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {keyCols.size > 1 && (
-                  <div className="mt-3 flex flex-wrap gap-2">
-                    <span className="text-xs text-muted-foreground mt-1">Composite key:</span>
-                    {Array.from(keyCols).map((k, i) => (
-                      <React.Fragment key={k}>
-                        <Badge variant="outline" className="font-mono text-xs border-primary/40 text-primary">{k}</Badge>
-                        {i < keyCols.size - 1 && <span className="text-xs text-muted-foreground mt-1">+</span>}
-                      </React.Fragment>
-                    ))}
-                  </div>
-                )}
+                <div className="space-y-3">
+                  {keyMappings.map((m, idx) => (
+                    <MappingRow
+                      key={m.id}
+                      mapping={m}
+                      colsA={fileA.columns}
+                      colsB={fileB.columns}
+                      idx={idx}
+                      prefix="key"
+                      accent="primary"
+                      onUpdateA={v => updateKeyMapping(m.id, { colA: v })}
+                      onUpdateB={v => updateKeyMapping(m.id, { colB: v })}
+                      onRemove={() => removeKeyMapping(m.id)}
+                      canRemove={keyMappings.length > 1}
+                    />
+                  ))}
+                </div>
               </CardContent>
             </Card>
 
             {/* Step 2: Columns to Compare */}
             <Card className="border-border/50 shadow-md mb-6 bg-card/50 backdrop-blur">
               <CardHeader className="pb-3">
-                <CardTitle className="text-lg">2. Columns to Compare</CardTitle>
-                <CardDescription>Choose which fields to check for differences. Key columns are excluded automatically.</CardDescription>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <ArrowLeftRight className="w-5 h-5 text-primary" />
+                    <CardTitle className="text-lg">2. Columns to Compare</CardTitle>
+                  </div>
+                  <Button variant="outline" size="sm" onClick={addCompareMapping} data-testid="button-add-compare">
+                    <Plus className="w-4 h-4 mr-1" />Add Column
+                  </Button>
+                </div>
+                <CardDescription>
+                  Map each value column you want to compare across the two files. e.g. "Online Price" vs "Store Price", "Stock Online" vs "Stock Offline".
+                </CardDescription>
               </CardHeader>
               <CardContent>
-                <div className="flex gap-3 mb-3">
-                  <Button variant="ghost" size="sm" className="text-xs h-7 px-3" onClick={() => setSelectedCols(new Set(sharedColumns))}>Select All</Button>
-                  <Button variant="ghost" size="sm" className="text-xs h-7 px-3" onClick={() => setSelectedCols(new Set())}>Clear All</Button>
-                </div>
-                <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-3">
-                  {allColumns.map(({ col, inA, inB }) => {
-                    const isKey = keyCols.has(col);
-                    const shared = inA && inB;
-                    return (
-                      <div
-                        key={col}
-                        className={`flex items-center gap-2 p-3 rounded-md border transition-colors select-none ${isKey ? "opacity-40 cursor-not-allowed border-border/30 bg-muted/30" : shared ? "cursor-pointer border-border/50 bg-background hover:border-primary/40" : "opacity-50 cursor-not-allowed border-dashed border-border/30"}`}
-                        onClick={() => { if (!isKey && shared) toggleCompareCols(col); }}
-                        title={!shared ? (inA ? "Only in Online sheet" : "Only in In-Store sheet") : isKey ? "Used as match key" : col}
-                      >
-                        <Checkbox
-                          checked={shared && !isKey && selectedCols.has(col)}
-                          disabled={isKey || !shared}
-                          onCheckedChange={() => { if (!isKey && shared) toggleCompareCols(col); }}
-                          id={`cmp-${col}`}
-                          className="pointer-events-none"
-                        />
-                        <div className="flex-1 min-w-0">
-                          <label htmlFor={`cmp-${col}`} className="text-sm font-medium truncate block cursor-pointer" title={col}>{col}</label>
-                          {!shared && (
-                            <span className="text-xs text-muted-foreground">{inA ? "Online only" : "In-Store only"}</span>
-                          )}
-                          {isKey && <span className="text-xs text-primary/60">Match key</span>}
-                        </div>
-                      </div>
-                    );
-                  })}
+                <div className="space-y-3">
+                  {compareMappings.map((m, idx) => (
+                    <MappingRow
+                      key={m.id}
+                      mapping={m}
+                      colsA={fileA.columns}
+                      colsB={fileB.columns}
+                      idx={idx}
+                      prefix="cmp"
+                      accent="cyan"
+                      onUpdateA={v => updateCompareMapping(m.id, { colA: v })}
+                      onUpdateB={v => updateCompareMapping(m.id, { colB: v })}
+                      onRemove={() => removeCompareMapping(m.id)}
+                      canRemove={compareMappings.length > 1}
+                    />
+                  ))}
                 </div>
               </CardContent>
             </Card>
@@ -310,13 +286,13 @@ export default function Home() {
                   </Button>
                 </div>
                 <CardDescription>
-                  Set conditions to focus only on rows that matter — e.g. "Stock less than 10", "Category contains Electronics", "Price greater than 500".
+                  Narrow results to rows that meet conditions — e.g. "Stock less than 10", "Category contains Electronics".
                 </CardDescription>
               </CardHeader>
               <CardContent>
                 {rules.length === 0 ? (
                   <div className="border border-dashed border-border/50 rounded-md p-6 text-center">
-                    <p className="text-sm text-muted-foreground">No rules set. All rows will be included.</p>
+                    <p className="text-sm text-muted-foreground">No rules set — all rows will be included.</p>
                     <Button variant="ghost" size="sm" className="mt-2 text-primary" onClick={addRule}>
                       <Plus className="w-3 h-3 mr-1" />Add your first rule
                     </Button>
@@ -325,9 +301,25 @@ export default function Home() {
                   <div className="space-y-3">
                     {rules.map((rule, idx) => {
                       const opMeta = OPERATORS.find(o => o.value === rule.operator);
+                      const cols = rule.sheet === "A" ? fileA.columns : fileB.columns;
                       return (
                         <div key={rule.id} className="flex items-center gap-2 flex-wrap p-3 bg-background rounded-md border border-border/50" data-testid={`rule-row-${idx}`}>
-                          <span className="text-xs font-medium text-muted-foreground w-6 shrink-0">#{idx + 1}</span>
+                          <span className="text-xs font-medium text-muted-foreground w-5 shrink-0">#{idx + 1}</span>
+
+                          {/* Sheet picker */}
+                          <Select value={rule.sheet} onValueChange={v => updateRule(rule.id, { sheet: v as RuleSheet, column: (v === "A" ? fileA : fileB).columns[0] ?? "" })}>
+                            <SelectTrigger className="w-28 h-8 text-xs" data-testid={`rule-sheet-${idx}`}>
+                              <SelectValue />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="A" className="text-xs">
+                                <span className="flex items-center gap-1"><ShoppingCart className="w-3 h-3 text-blue-400" />Online</span>
+                              </SelectItem>
+                              <SelectItem value="B" className="text-xs">
+                                <span className="flex items-center gap-1"><Store className="w-3 h-3 text-violet-400" />In-Store</span>
+                              </SelectItem>
+                            </SelectContent>
+                          </Select>
 
                           {/* Column */}
                           <Select value={rule.column} onValueChange={v => updateRule(rule.id, { column: v })}>
@@ -335,9 +327,7 @@ export default function Home() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {(fileA?.columns ?? []).map(c => (
-                                <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>
-                              ))}
+                              {cols.map(c => <SelectItem key={c} value={c} className="text-xs">{c}</SelectItem>)}
                             </SelectContent>
                           </Select>
 
@@ -347,16 +337,14 @@ export default function Home() {
                               <SelectValue />
                             </SelectTrigger>
                             <SelectContent>
-                              {OPERATORS.map(op => (
-                                <SelectItem key={op.value} value={op.value} className="text-xs">{op.label}</SelectItem>
-                              ))}
+                              {OPERATORS.map(op => <SelectItem key={op.value} value={op.value} className="text-xs">{op.label}</SelectItem>)}
                             </SelectContent>
                           </Select>
 
                           {/* Value */}
                           {opMeta?.needsValue && (
                             <Input
-                              className="w-36 h-8 text-xs font-mono"
+                              className="w-32 h-8 text-xs font-mono"
                               placeholder="value..."
                               value={rule.value}
                               onChange={e => updateRule(rule.id, { value: e.target.value })}
@@ -364,27 +352,13 @@ export default function Home() {
                             />
                           )}
 
-                          {/* Target */}
-                          <Select value={rule.target} onValueChange={v => updateRule(rule.id, { target: v as RuleTarget })}>
-                            <SelectTrigger className="w-36 h-8 text-xs" data-testid={`rule-target-${idx}`}>
-                              <SelectValue />
-                            </SelectTrigger>
-                            <SelectContent>
-                              {TARGETS.map(t => (
-                                <SelectItem key={t.value} value={t.value} className="text-xs">{t.label}</SelectItem>
-                              ))}
-                            </SelectContent>
-                          </Select>
-
-                          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive shrink-0 ml-auto" onClick={() => removeRule(rule.id)} data-testid={`rule-remove-${idx}`}>
+                          <Button variant="ghost" size="icon" className="h-8 w-8 text-muted-foreground hover:text-destructive shrink-0 ml-auto" onClick={() => removeRule(rule.id)}>
                             <Trash2 className="w-4 h-4" />
                           </Button>
                         </div>
                       );
                     })}
-                    {rules.length > 0 && (
-                      <p className="text-xs text-muted-foreground pl-1">All rules are applied together (AND logic). Rows must pass every rule to appear in results.</p>
-                    )}
+                    <p className="text-xs text-muted-foreground pl-1">Rules are applied per-sheet (AND logic). Each sheet's rows must pass its rules before matching.</p>
                   </div>
                 )}
               </CardContent>
@@ -394,7 +368,7 @@ export default function Home() {
               <Button
                 size="lg"
                 onClick={runComparison}
-                disabled={keyCols.size === 0 || selectedCols.size === 0}
+                disabled={keyMappings.length === 0 || compareMappings.length === 0}
                 className="w-full md:w-auto font-bold px-10 h-14 text-lg bg-primary hover:bg-primary/90 text-primary-foreground"
                 data-testid="button-run-comparison"
               >
@@ -418,18 +392,18 @@ export default function Home() {
         {step === "results" && results && (
           <div className="animate-in fade-in zoom-in-95 duration-500">
 
-            {/* Active rules pill bar */}
-            {results.appliedRules.length > 0 && (
+            {/* Active filters */}
+            {(results.appliedRules.length > 0 || results.summary.filteredCount > 0) && (
               <div className="flex flex-wrap gap-2 mb-4 items-center">
                 <span className="text-xs text-muted-foreground font-medium">Active filters:</span>
                 {results.appliedRules.map(r => {
                   const op = OPERATORS.find(o => o.value === r.operator);
                   return (
                     <Badge key={r.id} variant="secondary" className="font-mono text-xs gap-1">
+                      <span className="text-muted-foreground opacity-70">{r.sheet === "A" ? "Online" : "In-Store"}:</span>
                       <span className="text-primary font-semibold">{r.column}</span>
                       <span className="text-muted-foreground">{op?.label}</span>
                       {op?.needsValue && <span>"{r.value}"</span>}
-                      <span className="text-muted-foreground opacity-60">on {r.target === "both" ? "both" : r.target === "A" ? "Online" : r.target === "B" ? "In-Store" : "diffs"}</span>
                     </Badge>
                   );
                 })}
@@ -442,7 +416,7 @@ export default function Home() {
             )}
 
             {/* Metrics */}
-            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-8">
+            <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-6 gap-4 mb-6">
               <MetricCard title="Online Total" value={results.summary.totalA} icon={<ShoppingCart className="w-4 h-4 text-blue-400" />} className="border-blue-400/20 bg-blue-400/5" />
               <MetricCard title="In-Store Total" value={results.summary.totalB} icon={<Store className="w-4 h-4 text-violet-400" />} className="border-violet-400/20 bg-violet-400/5" />
               <MetricCard title="Matched" value={results.summary.matchedCount} icon={<CheckCircle2 className="w-4 h-4 text-emerald-500" />} className="border-emerald-500/20 bg-emerald-500/5" />
@@ -451,12 +425,28 @@ export default function Home() {
               <MetricCard title="Only In-Store" value={results.summary.onlyBCount} icon={<PlusCircle className="w-4 h-4 text-cyan-400" />} className="border-cyan-400/20 bg-cyan-400/5" />
             </div>
 
-            {/* Key used */}
-            <div className="flex flex-wrap gap-2 items-center mb-5">
-              <span className="text-xs text-muted-foreground font-medium">Matched by:</span>
-              {results.keyCols.map(k => (
-                <Badge key={k} variant="outline" className="font-mono text-xs border-primary/30 text-primary"><Key className="w-3 h-3 mr-1" />{k}</Badge>
-              ))}
+            {/* Mapping summary chips */}
+            <div className="flex flex-wrap gap-3 mb-5 items-start">
+              <div className="flex flex-wrap gap-2 items-center">
+                <span className="text-xs text-muted-foreground font-medium">Keys:</span>
+                {results.keyMappings.map(m => (
+                  <Badge key={m.id} variant="outline" className="font-mono text-xs border-primary/30">
+                    <span className="text-blue-400">{m.colA}</span>
+                    <ArrowLeftRight className="w-3 h-3 mx-1 text-muted-foreground" />
+                    <span className="text-violet-400">{m.colB}</span>
+                  </Badge>
+                ))}
+              </div>
+              <div className="flex flex-wrap gap-2 items-center">
+                <span className="text-xs text-muted-foreground font-medium">Compared:</span>
+                {results.compareMappings.map(m => (
+                  <Badge key={m.id} variant="secondary" className="font-mono text-xs">
+                    <span className="text-blue-400">{m.colA}</span>
+                    <span className="text-muted-foreground mx-1">vs</span>
+                    <span className="text-violet-400">{m.colB}</span>
+                  </Badge>
+                ))}
+              </div>
             </div>
 
             <Tabs defaultValue="diffs" className="w-full">
@@ -475,6 +465,7 @@ export default function Home() {
                 </TabsTrigger>
               </TabsList>
 
+              {/* Differences Tab */}
               <TabsContent value="diffs" className="m-0">
                 <Card className="border-border overflow-hidden">
                   <ScrollArea className="h-[60vh] w-full">
@@ -482,15 +473,26 @@ export default function Home() {
                       <EmptyState icon={<CheckCircle2 className="w-12 h-12 text-emerald-500 opacity-80" />} title="No differences found" subtitle="All matched rows are identical in the compared columns." />
                     ) : (
                       <table className="w-full text-sm text-left whitespace-nowrap">
-                        <thead className="text-xs uppercase bg-muted/50 text-muted-foreground sticky top-0 z-10 backdrop-blur-md">
+                        <thead className="text-xs bg-muted/50 text-muted-foreground sticky top-0 z-10 backdrop-blur-md">
                           <tr>
-                            {results.keyCols.map(k => (
-                              <th key={k} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[120px]">
-                                <span className="flex items-center gap-1"><Key className="w-3 h-3 text-primary" />{k}</span>
+                            {/* Key columns */}
+                            {results.keyMappings.map(m => (
+                              <th key={m.id} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[120px] uppercase tracking-wide">
+                                <span className="flex items-center gap-1">
+                                  <Key className="w-3 h-3 text-primary shrink-0" />
+                                  <span className="text-blue-400">{m.colA}</span>
+                                </span>
                               </th>
                             ))}
-                            {results.columns.map(col => (
-                              <th key={col} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[200px]">{col}</th>
+                            {/* Compare columns */}
+                            {results.compareMappings.map(m => (
+                              <th key={m.id} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[240px] uppercase tracking-wide">
+                                <span className="flex items-center gap-1">
+                                  <span className="text-blue-400">{m.colA}</span>
+                                  <span className="text-muted-foreground opacity-60 text-[10px]">vs</span>
+                                  <span className="text-violet-400">{m.colB}</span>
+                                </span>
+                              </th>
                             ))}
                           </tr>
                         </thead>
@@ -498,24 +500,24 @@ export default function Home() {
                           {results.differences.map((diff, idx) => {
                             const keyParts = diff.key.split("|||");
                             return (
-                              <tr key={idx} className="border-b border-border hover:bg-muted/20 transition-colors">
-                                {results.keyCols.map((k, i) => (
-                                  <td key={k} className="px-4 py-3 font-mono font-medium border-r bg-background/50 text-xs">{keyParts[i] ?? ""}</td>
+                              <tr key={idx} className="border-b border-border hover:bg-muted/20 transition-colors" data-testid={`diff-row-${idx}`}>
+                                {results.keyMappings.map((m, i) => (
+                                  <td key={m.id} className="px-4 py-3 font-mono text-xs font-medium border-r bg-background/50">{keyParts[i] ?? ""}</td>
                                 ))}
-                                {results.columns.map(col => {
-                                  const isChanged = diff.changedCols.includes(col);
-                                  const valA = diff.rowA[col] !== undefined ? String(diff.rowA[col]) : "(empty)";
-                                  const valB = diff.rowB[col] !== undefined ? String(diff.rowB[col]) : "(empty)";
+                                {results.compareMappings.map(m => {
+                                  const isChanged = diff.changedMappings.some(c => c.id === m.id);
+                                  const valA = diff.rowA[m.colA] !== undefined ? String(diff.rowA[m.colA]) : "(empty)";
+                                  const valB = diff.rowB[m.colB] !== undefined ? String(diff.rowB[m.colB]) : "(empty)";
                                   return (
-                                    <td key={col} className={`px-4 py-3 border-r ${isChanged ? "bg-accent/5" : ""}`}>
+                                    <td key={m.id} className={`px-4 py-3 border-r ${isChanged ? "bg-accent/5" : ""}`}>
                                       {isChanged ? (
                                         <div className="flex flex-col gap-1.5">
                                           <div className="flex items-center gap-1.5 text-destructive font-mono bg-destructive/10 px-2 py-1 rounded text-xs">
-                                            <span className="font-bold opacity-60 shrink-0 uppercase text-[10px]">Online</span>
+                                            <ShoppingCart className="w-3 h-3 shrink-0 opacity-60" />
                                             <span className="truncate" title={valA}>{valA}</span>
                                           </div>
                                           <div className="flex items-center gap-1.5 text-emerald-400 font-mono bg-emerald-500/10 px-2 py-1 rounded text-xs">
-                                            <span className="font-bold opacity-60 shrink-0 uppercase text-[10px]">Store</span>
+                                            <Store className="w-3 h-3 shrink-0 opacity-60" />
                                             <span className="truncate" title={valB}>{valB}</span>
                                           </div>
                                         </div>
@@ -535,14 +537,61 @@ export default function Home() {
                 </Card>
               </TabsContent>
 
+              {/* Matched Tab */}
               <TabsContent value="matches" className="m-0">
-                <SimpleDataTable rows={results.matched} columns={[...results.keyCols, ...results.columns]} emptyMessage="No perfectly matched rows." />
+                {results.matched.length === 0 ? (
+                  <EmptyCard message="No perfectly matched rows." />
+                ) : (
+                  <Card className="border-border overflow-hidden">
+                    <ScrollArea className="h-[60vh] w-full">
+                      <table className="w-full text-sm text-left whitespace-nowrap">
+                        <thead className="text-xs uppercase bg-muted/50 text-muted-foreground sticky top-0 z-10 backdrop-blur-md">
+                          <tr>
+                            {results.keyMappings.map(m => (
+                              <th key={m.id} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[120px]">
+                                <Key className="w-3 h-3 text-primary inline mr-1" />{m.colA}
+                              </th>
+                            ))}
+                            {results.compareMappings.map(m => (
+                              <th key={`a-${m.id}`} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[130px] text-blue-400">{m.colA}</th>
+                            ))}
+                            {results.compareMappings.map(m => (
+                              <th key={`b-${m.id}`} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[130px] text-violet-400">{m.colB}</th>
+                            ))}
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {results.matched.map((row, idx) => {
+                            const keyParts = row.key.split("|||");
+                            return (
+                              <tr key={idx} className="border-b border-border hover:bg-muted/20 transition-colors">
+                                {results.keyMappings.map((m, i) => (
+                                  <td key={m.id} className="px-4 py-3 font-mono text-xs font-medium border-r">{keyParts[i] ?? ""}</td>
+                                ))}
+                                {results.compareMappings.map(m => (
+                                  <td key={`a-${m.id}`} className="px-4 py-3 font-mono text-xs text-muted-foreground border-r">{String(row.rowA[m.colA] ?? "")}</td>
+                                ))}
+                                {results.compareMappings.map(m => (
+                                  <td key={`b-${m.id}`} className="px-4 py-3 font-mono text-xs text-muted-foreground border-r">{String(row.rowB[m.colB] ?? "")}</td>
+                                ))}
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </ScrollArea>
+                  </Card>
+                )}
               </TabsContent>
+
+              {/* Only A */}
               <TabsContent value="onlya" className="m-0">
-                <SimpleDataTable rows={results.onlyA} columns={[...results.keyCols, ...results.columns.filter(c => results.onlyA[0] && c in results.onlyA[0])]} emptyMessage="No rows exclusive to Online." />
+                <SimpleDataTable rows={results.onlyA} emptyMessage="No rows exclusive to Online." />
               </TabsContent>
+
+              {/* Only B */}
               <TabsContent value="onlyb" className="m-0">
-                <SimpleDataTable rows={results.onlyB} columns={[...results.keyCols, ...results.columns.filter(c => results.onlyB[0] && c in results.onlyB[0])]} emptyMessage="No rows exclusive to In-Store." />
+                <SimpleDataTable rows={results.onlyB} emptyMessage="No rows exclusive to In-Store." />
               </TabsContent>
             </Tabs>
           </div>
@@ -552,17 +601,59 @@ export default function Home() {
   );
 }
 
+/* ── Mapping Row ── */
+function MappingRow({ mapping, colsA, colsB, idx, prefix, accent, onUpdateA, onUpdateB, onRemove, canRemove }: {
+  mapping: ColMapping; colsA: string[]; colsB: string[];
+  idx: number; prefix: string; accent: string;
+  onUpdateA: (v: string) => void; onUpdateB: (v: string) => void;
+  onRemove: () => void; canRemove: boolean;
+}) {
+  return (
+    <div className="grid grid-cols-[1fr_auto_1fr_auto] gap-3 items-center" data-testid={`${prefix}-row-${idx}`}>
+      <Select value={mapping.colA} onValueChange={onUpdateA}>
+        <SelectTrigger className="h-9 text-sm border-blue-400/30 bg-blue-400/5 text-blue-300" data-testid={`${prefix}-colA-${idx}`}>
+          <SelectValue placeholder="Online column..." />
+        </SelectTrigger>
+        <SelectContent>
+          {colsA.map(c => <SelectItem key={c} value={c} className="text-sm">{c}</SelectItem>)}
+        </SelectContent>
+      </Select>
+
+      <div className="flex items-center justify-center">
+        <ArrowLeftRight className="w-4 h-4 text-muted-foreground" />
+      </div>
+
+      <Select value={mapping.colB} onValueChange={onUpdateB}>
+        <SelectTrigger className="h-9 text-sm border-violet-400/30 bg-violet-400/5 text-violet-300" data-testid={`${prefix}-colB-${idx}`}>
+          <SelectValue placeholder="In-Store column..." />
+        </SelectTrigger>
+        <SelectContent>
+          {colsB.map(c => <SelectItem key={c} value={c} className="text-sm">{c}</SelectItem>)}
+        </SelectContent>
+      </Select>
+
+      <Button
+        variant="ghost" size="icon"
+        className="h-9 w-9 text-muted-foreground hover:text-destructive"
+        onClick={onRemove}
+        disabled={!canRemove}
+        data-testid={`${prefix}-remove-${idx}`}
+      >
+        <Trash2 className="w-4 h-4" />
+      </Button>
+    </div>
+  );
+}
+
+/* ── Upload Zone ── */
 function UploadZone({ side, label, icon, file, onDrop, onUpload, onClear }: {
-  side: "A" | "B";
-  label: string;
-  icon: React.ReactNode;
-  file: { name: string; data: any[]; columns: string[] } | null;
+  side: "A" | "B"; label: string; icon: React.ReactNode;
+  file: FileData | null;
   onDrop: (e: React.DragEvent, side: "A" | "B") => void;
   onUpload: (file: File, side: "A" | "B") => void;
   onClear: () => void;
 }) {
   const inputId = `file-upload-${side}`;
-
   if (file) {
     return (
       <Card className="border-primary/40 bg-primary/5 shadow-md">
@@ -601,7 +692,6 @@ function UploadZone({ side, label, icon, file, onDrop, onUpload, onClear }: {
       </Card>
     );
   }
-
   return (
     <Card
       className="border-dashed border-2 hover:border-primary/50 hover:bg-card/80 transition-colors cursor-pointer group bg-card/30"
@@ -647,23 +737,25 @@ function EmptyState({ icon, title, subtitle }: { icon: React.ReactNode; title: s
   );
 }
 
-function SimpleDataTable({ rows, columns, emptyMessage }: { rows: any[]; columns: string[]; emptyMessage: string }) {
-  if (rows.length === 0) {
-    return (
-      <Card className="p-12 text-center border-dashed">
-        <FileWarning className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-50" />
-        <p className="text-lg text-muted-foreground font-medium">{emptyMessage}</p>
-      </Card>
-    );
-  }
-  const visibleCols = columns.filter(c => rows[0] && (c in rows[0]));
+function EmptyCard({ message }: { message: string }) {
+  return (
+    <Card className="p-12 text-center border-dashed">
+      <FileWarning className="w-12 h-12 text-muted-foreground mx-auto mb-4 opacity-50" />
+      <p className="text-lg text-muted-foreground font-medium">{message}</p>
+    </Card>
+  );
+}
+
+function SimpleDataTable({ rows, emptyMessage }: { rows: any[]; emptyMessage: string }) {
+  if (rows.length === 0) return <EmptyCard message={emptyMessage} />;
+  const columns = Object.keys(rows[0]);
   return (
     <Card className="border-border overflow-hidden">
       <ScrollArea className="h-[60vh] w-full">
         <table className="w-full text-sm text-left whitespace-nowrap">
           <thead className="text-xs uppercase bg-muted/50 text-muted-foreground sticky top-0 z-10 backdrop-blur-md">
             <tr>
-              {visibleCols.map(col => (
+              {columns.map(col => (
                 <th key={col} className="px-4 py-3 font-medium border-b border-r bg-card/90 min-w-[120px]">{col}</th>
               ))}
             </tr>
@@ -671,10 +763,8 @@ function SimpleDataTable({ rows, columns, emptyMessage }: { rows: any[]; columns
           <tbody>
             {rows.map((row, idx) => (
               <tr key={idx} className="border-b border-border hover:bg-muted/20 transition-colors">
-                {visibleCols.map(col => (
-                  <td key={col} className="px-4 py-3 border-r font-mono text-xs text-muted-foreground">
-                    {String(row[col] ?? "")}
-                  </td>
+                {columns.map(col => (
+                  <td key={col} className="px-4 py-3 border-r font-mono text-xs text-muted-foreground">{String(row[col] ?? "")}</td>
                 ))}
               </tr>
             ))}

@@ -10,14 +10,20 @@ export type RuleOperator =
   | "is_empty"
   | "is_not_empty";
 
-export type RuleTarget = "A" | "B" | "both" | "diff_only";
+export type RuleSheet = "A" | "B";
 
 export type Rule = {
   id: string;
+  sheet: RuleSheet;
   column: string;
   operator: RuleOperator;
   value: string;
-  target: RuleTarget;
+};
+
+export type ColMapping = {
+  id: string;
+  colA: string;
+  colB: string;
 };
 
 export type ComparisonResult = {
@@ -31,11 +37,11 @@ export type ComparisonResult = {
     filteredCount: number;
   };
   differences: DiffRow[];
-  matched: any[];
+  matched: MatchedRow[];
   onlyA: any[];
   onlyB: any[];
-  columns: string[];
-  keyCols: string[];
+  keyMappings: ColMapping[];
+  compareMappings: ColMapping[];
   appliedRules: Rule[];
 };
 
@@ -43,7 +49,13 @@ export type DiffRow = {
   key: string;
   rowA: any;
   rowB: any;
-  changedCols: string[];
+  changedMappings: ColMapping[];
+};
+
+export type MatchedRow = {
+  key: string;
+  rowA: any;
+  rowB: any;
 };
 
 export async function parseExcelFile(file: File): Promise<{ data: any[]; columns: string[] }> {
@@ -55,9 +67,7 @@ export async function parseExcelFile(file: File): Promise<{ data: any[]; columns
         const workbook = XLSX.read(data, { type: "array" });
         const firstSheetName = workbook.SheetNames[0];
         const worksheet = workbook.Sheets[firstSheetName];
-
         const jsonData = XLSX.utils.sheet_to_json(worksheet, { defval: "" });
-
         let columns: string[] = [];
         if (jsonData.length > 0) {
           columns = Object.keys(jsonData[0] as object);
@@ -68,19 +78,20 @@ export async function parseExcelFile(file: File): Promise<{ data: any[]; columns
             if (cell && cell.v) columns.push(String(cell.v));
           }
         }
-
         resolve({ data: jsonData, columns });
       } catch (err) {
         reject(err);
       }
     };
-    reader.onerror = (err) => reject(err);
+    reader.onerror = reject;
     reader.readAsArrayBuffer(file);
   });
 }
 
-function makeCompositeKey(row: any, keyCols: string[]): string {
-  return keyCols.map(col => String(row[col] ?? "").trim()).join("|||");
+function makeCompositeKey(row: any, mappings: ColMapping[], side: "A" | "B"): string {
+  return mappings
+    .map(m => String(row[side === "A" ? m.colA : m.colB] ?? "").trim())
+    .join("|||");
 }
 
 function applyRule(row: any, rule: Rule): boolean {
@@ -89,109 +100,77 @@ function applyRule(row: any, rule: Rule): boolean {
   const ruleVal = rule.value.trim().toLowerCase();
   const numCell = parseFloat(cellStr);
   const numRule = parseFloat(ruleVal);
-
   switch (rule.operator) {
-    case "equals":
-      return cellStr === ruleVal;
-    case "not_equals":
-      return cellStr !== ruleVal;
-    case "contains":
-      return cellStr.includes(ruleVal);
-    case "not_contains":
-      return !cellStr.includes(ruleVal);
-    case "greater_than":
-      return !isNaN(numCell) && !isNaN(numRule) && numCell > numRule;
-    case "less_than":
-      return !isNaN(numCell) && !isNaN(numRule) && numCell < numRule;
-    case "is_empty":
-      return cellStr === "" || rawVal === null || rawVal === undefined;
-    case "is_not_empty":
-      return cellStr !== "" && rawVal !== null && rawVal !== undefined;
-    default:
-      return true;
+    case "equals": return cellStr === ruleVal;
+    case "not_equals": return cellStr !== ruleVal;
+    case "contains": return cellStr.includes(ruleVal);
+    case "not_contains": return !cellStr.includes(ruleVal);
+    case "greater_than": return !isNaN(numCell) && !isNaN(numRule) && numCell > numRule;
+    case "less_than": return !isNaN(numCell) && !isNaN(numRule) && numCell < numRule;
+    case "is_empty": return cellStr === "" || rawVal === null || rawVal === undefined;
+    case "is_not_empty": return cellStr !== "" && rawVal !== null && rawVal !== undefined;
+    default: return true;
   }
-}
-
-function rowPassesRules(row: any, rules: Rule[], side: "A" | "B"): boolean {
-  return rules.every(rule => {
-    if (rule.target === "both") return applyRule(row, rule);
-    if (rule.target === side) return applyRule(row, rule);
-    return true;
-  });
 }
 
 export function compareSheets(
   dataA: any[],
   dataB: any[],
-  keyCols: string[],
-  compareCols: string[],
+  keyMappings: ColMapping[],
+  compareMappings: ColMapping[],
   rules: Rule[]
 ): ComparisonResult {
+  const rulesA = rules.filter(r => r.sheet === "A");
+  const rulesB = rules.filter(r => r.sheet === "B");
+
   const mapA = new Map<string, any>();
   const mapB = new Map<string, any>();
+  let filteredCount = 0;
 
   dataA.forEach(row => {
-    const key = makeCompositeKey(row, keyCols);
-    if (key.replace(/\|{3}/g, "").trim()) mapA.set(key, row);
+    if (rulesA.every(r => applyRule(row, r))) {
+      const key = makeCompositeKey(row, keyMappings, "A");
+      if (key.replace(/\|{3}/g, "").trim()) mapA.set(key, row);
+    } else {
+      filteredCount++;
+    }
   });
 
   dataB.forEach(row => {
-    const key = makeCompositeKey(row, keyCols);
-    if (key.replace(/\|{3}/g, "").trim()) mapB.set(key, row);
+    if (rulesB.every(r => applyRule(row, r))) {
+      const key = makeCompositeKey(row, keyMappings, "B");
+      if (key.replace(/\|{3}/g, "").trim()) mapB.set(key, row);
+    } else {
+      filteredCount++;
+    }
   });
 
-  const matched: any[] = [];
+  const matched: MatchedRow[] = [];
   const onlyA: any[] = [];
   const onlyB: any[] = [];
   const differences: DiffRow[] = [];
-  let filteredCount = 0;
-
-  const rowRules = rules.filter(r => r.target !== "diff_only");
-  const diffRules = rules.filter(r => r.target === "diff_only");
 
   for (const [key, rowA] of mapA.entries()) {
-    if (!rowPassesRules(rowA, rowRules, "A")) { filteredCount++; continue; }
-
     const rowB = mapB.get(key);
     if (!rowB) {
       onlyA.push(rowA);
     } else {
-      if (!rowPassesRules(rowB, rowRules, "B")) { filteredCount++; continue; }
-
-      const changedCols: string[] = [];
-      for (const col of compareCols) {
-        const valA = String(rowA[col] ?? "").trim();
-        const valB = String(rowB[col] ?? "").trim();
-        if (valA !== valB) changedCols.push(col);
+      const changedMappings: ColMapping[] = [];
+      for (const m of compareMappings) {
+        const valA = String(rowA[m.colA] ?? "").trim();
+        const valB = String(rowB[m.colB] ?? "").trim();
+        if (valA !== valB) changedMappings.push(m);
       }
-
-      if (changedCols.length > 0) {
-        const diffRow: DiffRow = { key, rowA, rowB, changedCols };
-        const passesDiffRules = diffRules.every(rule => {
-          const colVal = changedCols.includes(rule.column);
-          if (rule.operator === "is_not_empty") return colVal;
-          if (rule.operator === "is_empty") return !colVal;
-          return applyRule(rowA, rule) || applyRule(rowB, rule);
-        });
-        if (passesDiffRules) {
-          differences.push(diffRow);
-        } else {
-          filteredCount++;
-        }
+      if (changedMappings.length > 0) {
+        differences.push({ key, rowA, rowB, changedMappings });
       } else {
-        matched.push(rowA);
+        matched.push({ key, rowA, rowB });
       }
     }
   }
 
   for (const [key, rowB] of mapB.entries()) {
-    if (!mapA.has(key)) {
-      if (rowPassesRules(rowB, rowRules, "B")) {
-        onlyB.push(rowB);
-      } else {
-        filteredCount++;
-      }
-    }
+    if (!mapA.has(key)) onlyB.push(rowB);
   }
 
   return {
@@ -208,8 +187,8 @@ export function compareSheets(
     matched,
     onlyA,
     onlyB,
-    columns: compareCols,
-    keyCols,
+    keyMappings,
+    compareMappings,
     appliedRules: rules,
   };
 }
@@ -217,50 +196,56 @@ export function compareSheets(
 export function exportResultsToExcel(result: ComparisonResult, nameA: string, nameB: string) {
   const wb = XLSX.utils.book_new();
 
-  const summaryData = [
+  const summaryData: any[][] = [
     ["Metric", "Value"],
-    ["Total Rows in " + nameA, result.summary.totalA],
-    ["Total Rows in " + nameB, result.summary.totalB],
-    ["Matched (No Changes)", result.summary.matchedCount],
-    ["Rows with Differences", result.summary.diffCount],
+    ["Total rows in " + nameA, result.summary.totalA],
+    ["Total rows in " + nameB, result.summary.totalB],
+    ["Matched (no changes)", result.summary.matchedCount],
+    ["Rows with differences", result.summary.diffCount],
     ["Only in " + nameA, result.summary.onlyACount],
     ["Only in " + nameB, result.summary.onlyBCount],
-    ["Filtered by Rules", result.summary.filteredCount],
+    ["Filtered by rules", result.summary.filteredCount],
     [],
-    ["Key Columns", result.keyCols.join(", ")],
-    ["Applied Rules", result.appliedRules.length],
-    ...result.appliedRules.map(r => [
-      `  Rule`, `${r.column} ${r.operator.replace("_", " ")} "${r.value}" (on: ${r.target})`
-    ]),
+    ["Key Mappings"],
+    ...result.keyMappings.map(m => [`  ${nameA}: ${m.colA}`, `→ ${nameB}: ${m.colB}`]),
+    [],
+    ["Compare Mappings"],
+    ...result.compareMappings.map(m => [`  ${nameA}: ${m.colA}`, `→ ${nameB}: ${m.colB}`]),
+    [],
+    ["Applied Rules"],
+    ...result.appliedRules.map(r => [`  Sheet ${r.sheet}: ${r.column}`, `${r.operator.replace("_", " ")} "${r.value}"`]),
   ];
-  const summarySheet = XLSX.utils.aoa_to_sheet(summaryData);
-  XLSX.utils.book_append_sheet(wb, summarySheet, "Summary");
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(summaryData), "Summary");
 
   if (result.differences.length > 0) {
-    const diffExportData: any[] = [];
-    result.differences.forEach(diff => {
-      const keyParts = diff.key.split("|||");
+    const diffExportData: any[] = result.differences.map(diff => {
       const row: any = {};
-      result.keyCols.forEach((col, i) => { row[col] = keyParts[i] ?? ""; });
-      result.columns.forEach(col => {
-        if (diff.changedCols.includes(col)) {
-          row[`${col} (${nameA})`] = diff.rowA[col] ?? "";
-          row[`${col} (${nameB})`] = diff.rowB[col] ?? "";
-        } else {
-          row[col] = diff.rowA[col] ?? "";
-        }
+      result.keyMappings.forEach(m => {
+        row[`KEY: ${m.colA} (Online)`] = diff.rowA[m.colA] ?? "";
       });
-      diffExportData.push(row);
+      result.compareMappings.forEach(m => {
+        const changed = diff.changedMappings.some(c => c.id === m.id);
+        row[`${m.colA} (Online)`] = diff.rowA[m.colA] ?? "";
+        row[`${m.colB} (In-Store)`] = diff.rowB[m.colB] ?? "";
+        row[`Changed?`] = changed ? "YES" : "";
+      });
+      return row;
     });
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(diffExportData), "Differences");
   }
 
-  if (result.matched.length > 0)
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(result.matched), "Matched");
+  if (result.matched.length > 0) {
+    const matchedData = result.matched.map(m => {
+      const row: any = {};
+      result.keyMappings.forEach(km => { row[`KEY: ${km.colA}`] = m.rowA[km.colA] ?? ""; });
+      result.compareMappings.forEach(cm => { row[`${cm.colA} (Online)`] = m.rowA[cm.colA] ?? ""; row[`${cm.colB} (In-Store)`] = m.rowB[cm.colB] ?? ""; });
+      return row;
+    });
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(matchedData), "Matched");
+  }
 
   if (result.onlyA.length > 0)
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(result.onlyA), `Only in ${nameA.slice(0, 20)}`);
-
   if (result.onlyB.length > 0)
     XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(result.onlyB), `Only in ${nameB.slice(0, 20)}`);
 
