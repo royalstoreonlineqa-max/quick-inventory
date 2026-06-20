@@ -1,0 +1,31 @@
+kind = "web"
+previewPath = "/"
+title = "Excel Sheet Comparator"
+version = "1.0.0"
+id = "artifacts/excel-compare"
+router = "path"
+
+[[integratedSkills]]
+name = "react-vite"
+version = "1.0.0"
+
+[[services]]
+name = "web"
+paths = [ "/" ]
+localPort = 25717
+
+[services.development]
+run = "pnpm --filter @workspace/excel-compare run dev"
+
+[services.production]
+build = [ "pnpm", "--filter", "@workspace/excel-compare", "run", "build" ]
+publicDir = "artifacts/excel-compare/dist/public"
+serve = "static"
+
+[[services.production.rewrites]]
+from = "/*"
+to = "/index.html"
+
+[services.env]
+PORT = "25717"
+BASE_PATH = "/"
