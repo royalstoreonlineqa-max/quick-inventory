@@ -21,6 +21,7 @@ import { Badge } from "@/components/ui/badge";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { Command, CommandEmpty, CommandGroup, CommandInput, CommandItem, CommandList } from "@/components/ui/command";
 import { Switch } from "@/components/ui/switch";
+
 import { Label } from "@/components/ui/label";
 import { useToast } from "@/hooks/use-toast";
 import { cn } from "@/lib/utils";
@@ -72,19 +73,17 @@ function ColumnPicker({
           <CommandList>
             <CommandEmpty>No column found.</CommandEmpty>
             <CommandGroup>
-              <ScrollArea className="max-h-52">
-                {columns.map(col => (
-                  <CommandItem
-                    key={col}
-                    value={col}
-                    onSelect={() => { onChange(col); setOpen(false); }}
-                    className="text-sm cursor-pointer"
-                  >
-                    <Check className={cn("mr-2 h-4 w-4 shrink-0", value === col ? "opacity-100" : "opacity-0")} />
-                    <span className="truncate" title={col}>{col}</span>
-                  </CommandItem>
-                ))}
-              </ScrollArea>
+              {columns.map(col => (
+                <CommandItem
+                  key={col}
+                  value={col}
+                  onSelect={() => { onChange(col); setOpen(false); }}
+                  className="text-sm cursor-pointer"
+                >
+                  <Check className={cn("mr-2 h-4 w-4 shrink-0", value === col ? "opacity-100" : "opacity-0")} />
+                  <span className="truncate" title={col}>{col}</span>
+                </CommandItem>
+              ))}
             </CommandGroup>
           </CommandList>
         </Command>
