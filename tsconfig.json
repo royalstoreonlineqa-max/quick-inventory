@@ -1,5 +1,4 @@
-{
-<<<<<<< HEAD
+﻿{
   "extends": "./tsconfig.base.json",
   "compileOnSave": false,
   "files": [],
@@ -12,28 +11,6 @@
     },
     {
       "path": "./lib/api-zod"
-=======
-  "extends": "../../tsconfig.base.json",
-  "include": ["src/**/*"],
-  "exclude": ["node_modules", "build", "dist", "**/*.test.ts"],
-  "compilerOptions": {
-    "incremental": true,
-    "tsBuildInfoFile": ".tsbuildinfo",
-    "noEmit": true,
-    "jsx": "preserve",
-    "lib": ["esnext", "dom", "dom.iterable"],
-    "resolveJsonModule": true,
-    "allowImportingTsExtensions": true,
-    "moduleResolution": "bundler",
-    "types": ["node", "vite/client"],
-    "paths": {
-      "@/*": ["./src/*"]
-    }
-  },
-  "references": [
-    {
-      "path": "../../lib/api-client-react"
->>>>>>> 6a62cfac4785d91f44044581c73555b521ebd5a4
     }
   ]
 }
