@@ -132,7 +132,7 @@ export default function Home() {
     // Init output cols: all from A by default (or B for only_b)
     const src = op === "only_b" ? "B" : "A";
     const srcCols = op === "only_b" ? fileB.columns : fileA.columns;
-    setOutputCols(srcCols.map(c => ({ id: makeId(), source: src, col: c, label: c })));
+    setOutputCols([]);
     // Compare mappings for diff_values
     if (op === "diff_values") {
       setCompareMappings([{ id: makeId(), colA: fileA.columns[0] ?? "", colB: fileB.columns[0] ?? "" }]);
@@ -221,7 +221,7 @@ export default function Home() {
       <header className="border-b border-border bg-card px-6 py-4 flex items-center justify-between sticky top-0 z-10 shadow-sm">
         <div className="flex items-center gap-2">
           <FileSpreadsheet className="w-6 h-6 text-primary" />
-          <h1 className="text-xl font-bold tracking-tight">ReconcileX</h1>
+          <h1 className="text-xl font-bold tracking-tight">ROYAL SHEETS</h1>
           {opMeta && step !== "upload" && step !== "operation" && (
             <Badge variant="secondary" className="ml-2 text-xs font-normal gap-1">
               {opMeta.label}
